@@ -35,7 +35,8 @@ class Robot():
 
         self.tracker = None
 
-        self.sout = serial.Serial('/dev/ttyAMC0', 9600)
+        self.sout = serial.Serial('/dev/ttyACM0', 9600, writeTimeout=0)
+        # self.sout.open()
     def updateframe(self):
         _, self.frame = self.vs.read()
         if self.frame is None:
@@ -48,9 +49,22 @@ class Robot():
         self.rawframe = self.frame.copy()
 
     def motor_control(self, left, right):
-        self.sout.send(b'm')
-        self.sout.send(bytes(255*left))
-        self.sout.send(bytes(255*right))
+        print("before write")
+        self.sout.write(bytes([int(255)]))
+        if (right == 1):
+            right = 0.99;
+        
+        if (left == 1):
+            left = 0.99
+        print(right, left)
+        print(bytes([int(255 * left)]))
+        print(bytes([int(255 * right)]))
+
+        self.sout.flushOutput()
+        self.sout.write(bytes([int(255 * left)]))
+        self.sout.write(bytes([int(255 * right)]))
+        self.sout.flush()
+        print("after")
 
     def reset(self):
         self.firstFrame = self.gray
@@ -84,6 +98,7 @@ class Robot():
         return tracker
 
     def runLoop(self):
+        print("loop")
         self.updateframe()
         if self.status == "SEARCHING":
             # dont move
@@ -144,18 +159,16 @@ class Robot():
                 self.reset()
             x, y, w, h = self.targetbounds
             cv2.rectangle(self.frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-            xpos = ((2 * x + w) / 2)# / self.width
-            ypos = ((2 * y + h) / 2)  # / self.height
-            xpos = xpos + 1
-            xpos /= 2
-            ypos = ypos + 1
-            ypos /= 2
+            xpos = x + w / 2
+            ypos = y + h / 2
+            xpos /= self.width
+            ypos /= self.height
             print(xpos, ypos)
             print(status)
             # if xpos is -1, left is -1, right is 1
             # if xpos is 0, left is .5, right is .5
             # if xpos is 1, -1, 1
-            self.motor_control(int(1-xpos), int(1+xpos))
+            self.motor_control(min(2*xpos,1), min(2*(1-xpos),1))
     def get_initial_target(self):
         gray = cv2.cvtColor(self.frame, cv2.COLOR_BGR2GRAY)
         blur_rad = 21
