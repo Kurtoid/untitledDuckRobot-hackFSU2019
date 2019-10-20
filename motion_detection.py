@@ -6,12 +6,13 @@ import numpy as np
 import sys
 import time
 import serial
-
+import pygame
+from random import randrange
 def current_milli_time(): return int(round(time.time() * 1000))
 
 
 class Robot():
-    FRAME_WIDTH = 400
+    FRAME_WIDTH = 300
 
     def __init__(self):
         self.vs = cv2.VideoCapture(0)
@@ -49,14 +50,14 @@ class Robot():
         self.rawframe = self.frame.copy()
 
     def motor_control(self, left, right):
-        print("before write")
+        # print("before write")
         self.sout.write(bytes([int(255)]))
         if (right == 1):
             right = 0.99;
         
         if (left == 1):
             left = 0.99
-        print(right, left)
+        # print(right, left)
         print(bytes([int(255 * left)]))
         print(bytes([int(255 * right)]))
 
@@ -64,7 +65,7 @@ class Robot():
         self.sout.write(bytes([int(255 * left)]))
         self.sout.write(bytes([int(255 * right)]))
         self.sout.flush()
-        print("after")
+        # print("after")
 
     def reset(self):
         self.firstFrame = self.gray
@@ -76,7 +77,7 @@ class Robot():
         self.didntmoveframes = 0
 
     def make_tracker(self):
-        tracker_type = "CSRT"
+        tracker_type = "KCF"
         if tracker_type == 'BOOSTING':
             tracker = cv2.TrackerBoosting_create()
         if tracker_type == 'MIL':
@@ -96,9 +97,11 @@ class Robot():
         # bbox = cv2.selectROI(self.rawframe, self.targetbounds)
         tracker.init(self.rawframe, self.targetbounds)
         return tracker
-
+    i = 0
     def runLoop(self):
         print("loop")
+        if (randrange(12) == 1):
+            pygame.mixer.music.play()
         self.updateframe()
         if self.status == "SEARCHING":
             # dont move
@@ -112,9 +115,10 @@ class Robot():
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
         cv2.putText(self.frame, datetime.datetime.now().strftime("%A %d %B %Y %I:%M:%S%p"),
                     (10, self.frame.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 255), 1)
-        cv2.imshow("Front camera", self.frame)
-        if (self.locked):
-            cv2.imshow("target reference", self.target)
+        if(self.i%2==0):
+            cv2.imshow("Front camera", self.frame)
+            if (self.locked):
+                cv2.imshow("target reference", self.target)
 
         # show the frame and record if the user presses a key
         # cv2.imshow("Thresh", self.thresh)
@@ -129,7 +133,7 @@ class Robot():
             # pass
         if key == ord('p'):
             key = cv2.waitKey(0)  # wait, as a pause
-
+        self.i+=1
     def cleanup(self):
         self.vs.release()
         cv2.destroyAllWindows()
@@ -137,18 +141,18 @@ class Robot():
     def find_locked_target(self):
         if (self.tracker == None):
             self.tracker = self.make_tracker()
-            print("init tracker")
+            # print("init tracker")
         else:
             status, self.targetbounds = self.tracker.update(self.frame)
             self.targetbounds = tuple([int(x) for x in self.targetbounds])
             if (self.lasttargetbounds):
                 dx = abs(self.targetbounds[0] - self.lasttargetbounds[0])
                 dy = abs(self.targetbounds[1] - self.lasttargetbounds[1])
-                if (dx <= 6 and dy <= 6):
+                if (dx <= 2 and dy <= 2):
                     self.didntmoveframes += 1
                 else:
                     self.didntmoveframes = max(self.didntmoveframes-1, 0)
-                if (self.didntmoveframes > 5):
+                if (self.didntmoveframes > 15):
                     print("didnt move!")
                     self.reset()
                 
@@ -157,6 +161,8 @@ class Robot():
             # print(self.targetbounds)
             if (not status):
                 self.reset()
+                print("lost track")
+                time.sleep(2)
             x, y, w, h = self.targetbounds
             cv2.rectangle(self.frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
             xpos = x + w / 2
@@ -168,7 +174,10 @@ class Robot():
             # if xpos is -1, left is -1, right is 1
             # if xpos is 0, left is .5, right is .5
             # if xpos is 1, -1, 1
-            self.motor_control(min(2*xpos,1), min(2*(1-xpos),1))
+            sens = 0.7
+            offset = 0.35
+            setmin = 0.5
+            self.motor_control(min(sens * xpos + offset, setmin), min(sens * (1 - xpos) + offset, setmin))
     def get_initial_target(self):
         gray = cv2.cvtColor(self.frame, cv2.COLOR_BGR2GRAY)
         blur_rad = 21
@@ -181,7 +190,7 @@ class Robot():
         # compute the absolute difference between the current frame and
         # first frame
         frameDelta = cv2.absdiff(self.firstFrame, gray)
-        THRESHOLD = 50
+        THRESHOLD = 50/2
         thresh = cv2.threshold(frameDelta, THRESHOLD,
                                255, cv2.THRESH_BINARY)[1]
 
@@ -191,7 +200,7 @@ class Robot():
         cnts = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL,
                                 cv2.CHAIN_APPROX_SIMPLE)
         cnts = imutils.grab_contours(cnts)
-        C_AREA = 500
+        C_AREA = 1500
         # loop over the contours
         for c in cnts:
             # if the contour is too small, ignore it
@@ -208,7 +217,10 @@ class Robot():
             if (self.firstLockFrame == None):
                 # first time we've seen something, lets wait and see
                 self.firstLockFrame = current_milli_time()
-        if (self.firstLockFrame and len(cnts) > 0 and (current_milli_time() - self.firstLockFrame) > 750 and not self.locked):
+                self.target = self.rawframe[y:y + h, x:x + w]
+                self.targetbounds = (x, y, w, h)
+
+        if (self.firstLockFrame and len(cnts) > 0 and (current_milli_time() - self.firstLockFrame) > 1500 and not self.locked):
 
             # a whole second
             # grab the largest frame
@@ -223,12 +235,20 @@ class Robot():
                 largestSection = cnts[maxIndx]
                 (x, y, w, h) = cv2.boundingRect(largestSection)
 
-                self.target = self.rawframe[y:y + h, x:x + w]
-                self.targetbounds = (x, y, w, h)
                 self.locked = True
                 self.status = "LOCKED"
             else:
                 self.firstLockFrame = None
+        elif (self.firstLockFrame):
+            # if object moves too far away (or camera is jittery)
+            maxVal = 0
+            for i, c in enumerate(cnts):
+                area = cv2.contourArea(c)
+                maxVal = max(maxVal, area)
+            if maxVal < C_AREA:
+                self.firstLockFrame = None
+                self.reset()
+
         # cv2.imshow("Frame Delta", frameDelta)
         self.thresh = thresh
         self.frameDelta = frameDelta
@@ -236,6 +256,8 @@ class Robot():
 
 
 if __name__ == "__main__":
+    pygame.mixer.init()
+    pygame.mixer.music.load("quack_5.mp3")
     robot = Robot()
     while True:
         robot.runLoop()
