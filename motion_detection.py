@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 import sys
 import time
-
+import serial
 
 def current_milli_time(): return int(round(time.time() * 1000))
 
@@ -34,6 +34,8 @@ class Robot():
         self.didntmoveframes = 0
 
         self.tracker = None
+
+        self.sout = serial.Serial('/dev/ttyAMC0', 9600)
     def updateframe(self):
         _, self.frame = self.vs.read()
         if self.frame is None:
@@ -44,6 +46,12 @@ class Robot():
         self.frame = imutils.resize(
             self.frame, width=self.FRAME_WIDTH, height=self.FRAME_WIDTH)
         self.rawframe = self.frame.copy()
+
+    def motor_control(self, left, right):
+        self.sout.send(b'm')
+        self.sout.send(bytes(255*left))
+        self.sout.send(bytes(255*right))
+
     def reset(self):
         self.firstFrame = self.gray
         self.firstLockFrame = None
@@ -79,6 +87,7 @@ class Robot():
         self.updateframe()
         if self.status == "SEARCHING":
             # dont move
+            self.motor_control(0, 0)
             self.get_initial_target()
         elif self.status == "LOCKED":
             self.find_locked_target()
@@ -136,10 +145,17 @@ class Robot():
             x, y, w, h = self.targetbounds
             cv2.rectangle(self.frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
             xpos = ((2 * x + w) / 2)# / self.width
-            ypos = ((2 * y + h) / 2)# / self.height
+            ypos = ((2 * y + h) / 2)  # / self.height
+            xpos = xpos + 1
+            xpos /= 2
+            ypos = ypos + 1
+            ypos /= 2
             print(xpos, ypos)
             print(status)
-
+            # if xpos is -1, left is -1, right is 1
+            # if xpos is 0, left is .5, right is .5
+            # if xpos is 1, -1, 1
+            self.motor_control(int(1-xpos), int(1+xpos))
     def get_initial_target(self):
         gray = cv2.cvtColor(self.frame, cv2.COLOR_BGR2GRAY)
         blur_rad = 21
@@ -176,7 +192,6 @@ class Robot():
             cv2.putText(self.frame, str(cv2.contourArea(c)), (x, y),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
             # self.status = "MOTION"
-            # TODO: wait a few frames, and grab the image
             if (self.firstLockFrame == None):
                 # first time we've seen something, lets wait and see
                 self.firstLockFrame = current_milli_time()
