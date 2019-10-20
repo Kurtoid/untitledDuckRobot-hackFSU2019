@@ -24,6 +24,11 @@ class Robot():
 
         self.firstLockFrame = None
         self.locked = False
+
+        self.target = None
+        self.targetbounds = None
+
+        self.tracker = None
     def updateframe(self):
         _, self.frame = self.vs.read()
         if self.frame is None:
@@ -32,12 +37,37 @@ class Robot():
 
         # resize the frame, convert it to grayscale, and blur it
         self.frame = imutils.resize(self.frame, width=self.FRAME_WIDTH)
+        self.rawframe = self.frame.copy()
 
+    def make_tracker(self):
+        tracker_type = "CSRT"
+        if tracker_type == 'BOOSTING':
+            tracker = cv2.TrackerBoosting_create()
+        if tracker_type == 'MIL':
+            tracker = cv2.TrackerMIL_create()
+        if tracker_type == 'KCF':
+            tracker = cv2.TrackerKCF_create()
+        if tracker_type == 'TLD':
+            tracker = cv2.TrackerTLD_create()
+        if tracker_type == 'MEDIANFLOW':
+            tracker = cv2.TrackerMedianFlow_create()
+        if tracker_type == 'GOTURN':
+            tracker = cv2.TrackerGOTURN_create()
+        if tracker_type == 'MOSSE':
+            tracker = cv2.TrackerMOSSE_create()
+        if tracker_type == "CSRT":
+            tracker = cv2.TrackerCSRT_create()
+        # bbox = cv2.selectROI(self.rawframe, self.targetbounds)
+        tracker.init(self.rawframe, self.targetbounds)
+        return tracker
     def runLoop(self):
         self.updateframe()
         if self.status == "SEARCHING":
             # dont move
             self.get_initial_target()
+        elif self.status == "LOCKED":
+            self.find_locked_target()
+    
 
         # draw the text and timestamp on the frame
         cv2.putText(self.frame, "Room Status: {}".format(self.status), (10, 20),
@@ -45,9 +75,12 @@ class Robot():
         cv2.putText(self.frame, datetime.datetime.now().strftime("%A %d %B %Y %I:%M:%S%p"),
                     (10, self.frame.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 255), 1)
         cv2.imshow("Front camera", self.frame)
+        if (self.locked ):
+            cv2.imshow("target reference", self.target)
+
         # show the frame and record if the user presses a key
-        # cv2.imshow("Thresh", self.thresh)
-        # cv2.imshow("Frame Delta", self.frameDelta)
+        cv2.imshow("Thresh", self.thresh)
+        cv2.imshow("Frame Delta", self.frameDelta)
         key = cv2.waitKey(1) & 0xFF
 
         if key == ord("q"):
@@ -57,6 +90,8 @@ class Robot():
             self.firstFrame = self.gray
             self.firstLockFrame = None
             self.locked = False
+            self.status = "SEARCHING"
+            self.tracker = None
             # pass
         if key == ord('p'):
             key = cv2.waitKey(0)  # wait, as a pause
@@ -65,9 +100,21 @@ class Robot():
         self.vs.release()
         cv2.destroyAllWindows()
 
+    def find_locked_target(self):
+        if (self.tracker == None):
+            self.tracker = self.make_tracker()
+            print("init tracker")
+        else:
+            status, self.targetbounds = self.tracker.update(self.frame)
+            self.targetbounds = tuple([int(x) for x in self.targetbounds])
+            print(self.targetbounds)
+            x, y, w, h = self.targetbounds
+            cv2.rectangle(self.frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
     def get_initial_target(self):
         gray = cv2.cvtColor(self.frame, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (21, 21), 0)
+        blur_rad = 21
+        gray = cv2.GaussianBlur(gray, (blur_rad, blur_rad), 0)
 
         # if the first frame is None, initialize it
         if self.firstFrame is None:
@@ -86,7 +133,7 @@ class Robot():
         cnts = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL,
                                 cv2.CHAIN_APPROX_SIMPLE)
         cnts = imutils.grab_contours(cnts)
-        C_AREA = 1000
+        C_AREA = 500
         # loop over the contours
         for c in cnts:
             # if the contour is too small, ignore it
@@ -118,9 +165,11 @@ class Robot():
             largestSection = cnts[maxIndx]
             (x, y, w, h) = cv2.boundingRect(largestSection)
 
-            cv2.imshow("the item", self.frame[y:y + h, x:x + w])
+            self.target = self.rawframe[y:y + h, x:x + w]
+            self.targetbounds = (x,y,w,h)
             self.locked = True
-        cv2.imshow("Frame Delta", frameDelta)
+            self.status = "LOCKED"
+        # cv2.imshow("Frame Delta", frameDelta)
         self.thresh = thresh
         self.frameDelta = frameDelta
         self.gray = gray
