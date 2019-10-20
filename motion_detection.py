@@ -15,6 +15,9 @@ class Robot():
 
     def __init__(self):
         self.vs = cv2.VideoCapture(0)
+        self.width = self.vs.get(cv2.CAP_PROP_FRAME_WIDTH)
+        self.height = self.vs.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        print(self.width, self.height)
         ret, frame = self.vs.read()
         self.firstFrame = None
         self.thresh = np.zeros_like(frame)
@@ -27,6 +30,8 @@ class Robot():
 
         self.target = None
         self.targetbounds = None
+        self.lasttargetbounds = None
+        self.didntmoveframes = 0
 
         self.tracker = None
     def updateframe(self):
@@ -36,8 +41,17 @@ class Robot():
             return
 
         # resize the frame, convert it to grayscale, and blur it
-        self.frame = imutils.resize(self.frame, width=self.FRAME_WIDTH)
+        self.frame = imutils.resize(
+            self.frame, width=self.FRAME_WIDTH, height=self.FRAME_WIDTH)
         self.rawframe = self.frame.copy()
+    def reset(self):
+        self.firstFrame = self.gray
+        self.firstLockFrame = None
+        self.locked = False
+        self.status = "SEARCHING"
+        self.tracker = None
+        self.lasttargetbounds = None
+        self.didntmoveframes = 0
 
     def make_tracker(self):
         tracker_type = "CSRT"
@@ -60,6 +74,7 @@ class Robot():
         # bbox = cv2.selectROI(self.rawframe, self.targetbounds)
         tracker.init(self.rawframe, self.targetbounds)
         return tracker
+
     def runLoop(self):
         self.updateframe()
         if self.status == "SEARCHING":
@@ -67,7 +82,6 @@ class Robot():
             self.get_initial_target()
         elif self.status == "LOCKED":
             self.find_locked_target()
-    
 
         # draw the text and timestamp on the frame
         cv2.putText(self.frame, "Room Status: {}".format(self.status), (10, 20),
@@ -75,23 +89,19 @@ class Robot():
         cv2.putText(self.frame, datetime.datetime.now().strftime("%A %d %B %Y %I:%M:%S%p"),
                     (10, self.frame.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 255), 1)
         cv2.imshow("Front camera", self.frame)
-        if (self.locked ):
+        if (self.locked):
             cv2.imshow("target reference", self.target)
 
         # show the frame and record if the user presses a key
-        cv2.imshow("Thresh", self.thresh)
-        cv2.imshow("Frame Delta", self.frameDelta)
+        # cv2.imshow("Thresh", self.thresh)
+        # cv2.imshow("Frame Delta", self.frameDelta)
         key = cv2.waitKey(1) & 0xFF
 
         if key == ord("q"):
             self.cleanup()
             sys.exit(0)
         if (key == ord("r")):
-            self.firstFrame = self.gray
-            self.firstLockFrame = None
-            self.locked = False
-            self.status = "SEARCHING"
-            self.tracker = None
+            self.reset()
             # pass
         if key == ord('p'):
             key = cv2.waitKey(0)  # wait, as a pause
@@ -107,9 +117,28 @@ class Robot():
         else:
             status, self.targetbounds = self.tracker.update(self.frame)
             self.targetbounds = tuple([int(x) for x in self.targetbounds])
-            print(self.targetbounds)
+            if (self.lasttargetbounds):
+                dx = abs(self.targetbounds[0] - self.lasttargetbounds[0])
+                dy = abs(self.targetbounds[1] - self.lasttargetbounds[1])
+                if (dx <= 6 and dy <= 6):
+                    self.didntmoveframes += 1
+                else:
+                    self.didntmoveframes = max(self.didntmoveframes-1, 0)
+                if (self.didntmoveframes > 5):
+                    print("didnt move!")
+                    self.reset()
+                
+        
+            self.lasttargetbounds = self.targetbounds
+            # print(self.targetbounds)
+            if (not status):
+                self.reset()
             x, y, w, h = self.targetbounds
             cv2.rectangle(self.frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            xpos = ((2 * x + w) / 2)# / self.width
+            ypos = ((2 * y + h) / 2)# / self.height
+            print(xpos, ypos)
+            print(status)
 
     def get_initial_target(self):
         gray = cv2.cvtColor(self.frame, cv2.COLOR_BGR2GRAY)
@@ -123,7 +152,7 @@ class Robot():
         # compute the absolute difference between the current frame and
         # first frame
         frameDelta = cv2.absdiff(self.firstFrame, gray)
-        THRESHOLD = 25
+        THRESHOLD = 50
         thresh = cv2.threshold(frameDelta, THRESHOLD,
                                255, cv2.THRESH_BINARY)[1]
 
@@ -151,7 +180,7 @@ class Robot():
             if (self.firstLockFrame == None):
                 # first time we've seen something, lets wait and see
                 self.firstLockFrame = current_milli_time()
-        if (self.firstLockFrame and len(cnts) > 0 and (current_milli_time() - self.firstLockFrame) > 1000 and not self.locked):
+        if (self.firstLockFrame and len(cnts) > 0 and (current_milli_time() - self.firstLockFrame) > 750 and not self.locked):
 
             # a whole second
             # grab the largest frame
@@ -162,13 +191,16 @@ class Robot():
                 if area > maxVal:
                     maxIndx = i
                     maxVal = area
-            largestSection = cnts[maxIndx]
-            (x, y, w, h) = cv2.boundingRect(largestSection)
+            if (maxVal>C_AREA):
+                largestSection = cnts[maxIndx]
+                (x, y, w, h) = cv2.boundingRect(largestSection)
 
-            self.target = self.rawframe[y:y + h, x:x + w]
-            self.targetbounds = (x,y,w,h)
-            self.locked = True
-            self.status = "LOCKED"
+                self.target = self.rawframe[y:y + h, x:x + w]
+                self.targetbounds = (x, y, w, h)
+                self.locked = True
+                self.status = "LOCKED"
+            else:
+                self.firstLockFrame = None
         # cv2.imshow("Frame Delta", frameDelta)
         self.thresh = thresh
         self.frameDelta = frameDelta
